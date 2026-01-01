@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import ijson
+import re
 from pathlib import Path
 from attribute_types import infer_all_attribute_types
 
@@ -60,6 +61,85 @@ def filter_attributes(attributes, query):
         return attributes
     q = query.lower()
     return [a for a in attributes if q in a.lower()]
+
+_EXIF_DATE_RE = re.compile(r"^(\d{4}):(\d{2}):(\d{2})(.*)$")
+
+
+def parse_exif_datetime_series(series: pd.Series) -> pd.Series:
+    # 1. Konvertierung zu String und Normalisierung
+    s = series.dropna().astype(str)
+
+    def normalize(v: str) -> str:
+        if not isinstance(v, str) or v.strip() == "":
+            return v
+        # Exif Standard YYYY:MM:DD HH:MM:SS zu YYYY-MM-DD HH:MM:SS
+        m = _EXIF_DATE_RE.match(v)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}{m.group(4)}"
+        return v
+
+    normalized = s.map(normalize)
+
+    # 2. Umwandlung mit utc=True um Mixed-Offsets zu handhaben
+    return pd.to_datetime(
+        normalized,
+        errors="coerce",
+        utc=True  # Behebt die FutureWarning und sorgt für einheitlichen Typ
+    )
+
+def get_datetime_components(series):
+    dt = parse_exif_datetime_series(series)
+    valid_dt = dt.dropna()
+
+    # Falls nach der Konvertierung nichts übrig bleibt oder der Typ falsch ist
+    if valid_dt.empty or not pd.api.types.is_datetime64_any_dtype(valid_dt):
+        return {"year": [], "month": [], "weekday": [], "hour": []}
+
+    # Sicherstellen, dass die Series als Datetime erkannt wird
+    valid_dt = pd.to_datetime(valid_dt)
+
+    return {
+        "year": sorted(valid_dt.dt.year.unique().astype(int)),
+        "month": sorted(valid_dt.dt.month.unique().astype(int)),
+        "weekday": sorted(valid_dt.dt.weekday.unique().astype(int)),
+        "hour": sorted(valid_dt.dt.hour.unique().astype(int)),
+    }
+
+def apply_filters(df, filters, types):
+    mask = pd.Series(True, index=df.index)
+
+    for attr, f in filters.items():
+        t = types[attr]
+
+        if t == "datetime":
+            dt = parse_exif_datetime_series(df[attr])
+
+            # Falls die Spalte keine Datumsangaben enthält, überspringen oder alles ausblenden
+            if not pd.api.types.is_datetime64_any_dtype(dt):
+                mask &= False
+                continue
+
+            # Erstelle eine Maske für gültige (nicht NaT) Werte
+            temp_mask = dt.notna()
+
+            # Nur filtern, wenn Werte vorhanden sind
+            # Wir verwenden hier .dt nur auf den validen Werten
+            temp_mask &= dt.dt.year.isin(f["year"])
+            temp_mask &= dt.dt.month.isin(f["month"])
+            temp_mask &= dt.dt.weekday.isin(f["weekday"])
+            temp_mask &= dt.dt.hour.isin(f["hour"])
+
+            mask &= temp_mask
+
+        elif t == "numeric":
+            lo, hi = f
+            mask &= df[attr].between(lo, hi)
+
+        else:  # categorical
+            mask &= df[attr].isin(f)
+
+    return df[mask]
+
 
 # ---------- Streamlit UI ----------
 
@@ -211,9 +291,101 @@ if "df" in st.session_state:
         st.markdown("### ✅ Ausgewählte Attribute")
         st.caption(f"{len(st.session_state.attributes_selected)} ausgewählt")
 
-        with st.container(height=400):
+        with st.container(height=300):
             for attr in sorted(st.session_state.attributes_selected):
                 col_a, col_b = st.columns([5, 1])
                 col_a.write(attr)
                 if col_b.button("❌", key=f"remove_{attr}"):
                     st.session_state.attributes_selected.remove(attr)
+
+        st.divider()
+
+        if st.button("🚀 Anwenden"):
+            st.session_state.applied_attributes = list(
+                st.session_state.attributes_selected
+            )
+            st.session_state.filters = {}  # reset Filterzustand
+
+if "applied_attributes" in st.session_state:
+    st.subheader("🔧 Filter")
+
+    types = st.session_state.attribute_types
+    filters = st.session_state.filters
+
+    for attr in st.session_state.applied_attributes:
+        attr_type = types[attr]
+
+        if attr_type == "datetime":
+            st.markdown(f"#### 🕒 {attr}")
+
+            comps = get_datetime_components(df[attr])
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            filters[attr] = {
+                "year": col1.multiselect(
+                    "Jahr",
+                    comps["year"],
+                    default=comps["year"],
+                    key=f"{attr}_year"
+                ),
+                "month": col2.multiselect(
+                    "Monat",
+                    comps["month"],
+                    default=comps["month"],
+                    key=f"{attr}_month"
+                ),
+                "weekday": col3.multiselect(
+                    "Wochentag (0=Mo)",
+                    comps["weekday"],
+                    default=comps["weekday"],
+                    key=f"{attr}_weekday"
+                ),
+                "hour": col4.multiselect(
+                    "Stunde",
+                    comps["hour"],
+                    default=comps["hour"],
+                    key=f"{attr}_hour"
+                ),
+            }
+
+        elif attr_type == "numeric":
+            st.markdown(f"#### 🔢 {attr}")
+
+            series = df[attr].dropna()
+            min_val, max_val = float(series.min()), float(series.max())
+
+            filters[attr] = st.slider(
+                attr,
+                min_value=min_val,
+                max_value=max_val,
+                value=(min_val, max_val),
+                key=f"{attr}_range"
+            )
+
+        else:
+            st.markdown(f"#### 📦 {attr}")
+
+            values = sorted(df[attr].dropna().unique())
+
+            filters[attr] = st.multiselect(
+                attr,
+                values,
+                default=values,
+                key=f"{attr}_cat"
+            )
+
+if "filters" in st.session_state:
+    filtered_df = apply_filters(
+        df,
+        st.session_state.filters,
+        st.session_state.attribute_types
+    )
+
+    st.session_state.filtered_df = filtered_df
+
+    st.divider()
+    st.metric(
+        "🎯 Anzahl Mediendateien, die den Filterkriterien entsprechen",
+        f"{len(filtered_df):,}"
+    )
