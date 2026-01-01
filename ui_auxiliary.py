@@ -1,0 +1,140 @@
+import pandas as pd
+import ijson
+import re
+from pathlib import Path
+
+# ---------- Hilfsfunktionen ----------
+
+def normalize_sourcefile(meta_file: Path, sourcefile: str) -> str:
+    base_dir = meta_file.parent
+    if sourcefile.startswith("./"):
+        return str(base_dir / sourcefile[2:])
+    return str(base_dir / sourcefile)
+
+def extract_directory_levels(sourcefile: str):
+    p = Path(sourcefile)
+    parts = p.parts[:-1]  # ohne Dateiname
+
+    parts = [p for p in parts if p not in (".", "")]
+
+    level_dirs = []
+    year_found = False
+
+    for d in parts:
+        if d.isdigit() and len(d) == 4:
+            year_found = True
+            continue
+        if year_found:
+            level_dirs.append(d)
+
+    return {
+        f"Level{i+1}-Verzeichnis": name
+        for i, name in enumerate(level_dirs)
+    }
+
+def load_metadata(meta_file: Path, max_items=None):
+    rows = []
+
+    with open(meta_file, "rb") as f:
+        for i, item in enumerate(ijson.items(f, "item")):
+            src = item.get("SourceFile")
+            if not src:
+                continue
+
+            normalized = normalize_sourcefile(meta_file, src)
+            item["SourceFile"] = normalized
+
+            levels = extract_directory_levels(src)
+            item.update(levels)
+
+            rows.append(item)
+
+            if max_items and i >= max_items:
+                break
+
+    return pd.DataFrame(rows)
+
+def filter_attributes(attributes, query):
+    if not query:
+        return attributes
+    q = query.lower()
+    return [a for a in attributes if q in a.lower()]
+
+_EXIF_DATE_RE = re.compile(r"^(\d{4}):(\d{2}):(\d{2})(.*)$")
+
+
+def parse_exif_datetime_series(series: pd.Series) -> pd.Series:
+    # 1. Konvertierung zu String und Normalisierung
+    s = series.dropna().astype(str)
+
+    def normalize(v: str) -> str:
+        if not isinstance(v, str) or v.strip() == "":
+            return v
+        # Exif Standard YYYY:MM:DD HH:MM:SS zu YYYY-MM-DD HH:MM:SS
+        m = _EXIF_DATE_RE.match(v)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}{m.group(4)}"
+        return v
+
+    normalized = s.map(normalize)
+
+    # 2. Umwandlung mit utc=True um Mixed-Offsets zu handhaben
+    return pd.to_datetime(
+        normalized,
+        errors="coerce",
+        utc=True  # Behebt die FutureWarning und sorgt für einheitlichen Typ
+    )
+
+def get_datetime_components(series):
+    dt = parse_exif_datetime_series(series)
+    valid_dt = dt.dropna()
+
+    # Falls nach der Konvertierung nichts übrig bleibt oder der Typ falsch ist
+    if valid_dt.empty or not pd.api.types.is_datetime64_any_dtype(valid_dt):
+        return {"year": [], "month": [], "weekday": [], "hour": []}
+
+    # Sicherstellen, dass die Series als Datetime erkannt wird
+    valid_dt = pd.to_datetime(valid_dt)
+
+    return {
+        "year": sorted(valid_dt.dt.year.unique().astype(int)),
+        "month": sorted(valid_dt.dt.month.unique().astype(int)),
+        "weekday": sorted(valid_dt.dt.weekday.unique().astype(int)),
+        "hour": sorted(valid_dt.dt.hour.unique().astype(int)),
+    }
+
+def apply_filters(df, filters, types):
+    mask = pd.Series(True, index=df.index)
+
+    for attr, f in filters.items():
+        t = types[attr]
+
+        if t == "datetime":
+            dt = parse_exif_datetime_series(df[attr])
+
+            # Falls die Spalte keine Datumsangaben enthält, überspringen oder alles ausblenden
+            if not pd.api.types.is_datetime64_any_dtype(dt):
+                mask &= False
+                continue
+
+            # Erstelle eine Maske für gültige (nicht NaT) Werte
+            temp_mask = dt.notna()
+
+            # Nur filtern, wenn Werte vorhanden sind
+            # Wir verwenden hier .dt nur auf den validen Werten
+            temp_mask &= dt.dt.year.isin(f["year"])
+            temp_mask &= dt.dt.month.isin(f["month"])
+            temp_mask &= dt.dt.weekday.isin(f["weekday"])
+            temp_mask &= dt.dt.hour.isin(f["hour"])
+
+            mask &= temp_mask
+
+        elif t == "numeric":
+            lo, hi = f
+            mask &= df[attr].between(lo, hi)
+
+        else:  # categorical
+            mask &= df[attr].isin(f)
+
+    return df[mask]
+
