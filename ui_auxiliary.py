@@ -155,6 +155,41 @@ def apply_filters(df, filters, types, media_filter):
 
     return df[mask]
 
+def apply_filters_except(df, filters, types, media_filter, exclude_attr=None):
+    mask = pd.Series(True, index=df.index)
+
+    for attr, f in filters.items():
+        if attr == exclude_attr:
+            continue
+
+        t = types[attr]
+
+        if t == "datetime":
+            dt = parse_exif_datetime_series(df[attr])
+            mask &= dt.dt.year.isin(f["year"])
+            mask &= dt.dt.month.isin(f["month"])
+            mask &= dt.dt.weekday.isin(f["weekday"])
+            mask &= dt.dt.hour.isin(f["hour"])
+
+        elif t == "numeric":
+            lo, hi = f
+            mask &= df[attr].between(lo, hi)
+
+        else:
+            mask &= df[attr].isin(f)
+
+    # globaler Medienfilter
+    if media_filter != "Alle Medien":
+        is_image = df["SourceFile"].str.lower().str.endswith(tuple(IMAGE_EXTS))
+        is_video = df["SourceFile"].str.lower().str.endswith(tuple(VIDEO_EXTS))
+
+        if media_filter == "Nur Bilder":
+            mask &= is_image
+        elif media_filter == "Nur Videos":
+            mask &= is_video
+
+    return df[mask]
+
 from moviepy import VideoFileClip
 
 def get_video_duration(path: str) -> float:
@@ -180,3 +215,4 @@ def get_media_type(path: str) -> str:
     if ext in VIDEO_EXTS:
         return "video"
     return "other"
+

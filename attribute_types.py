@@ -55,7 +55,7 @@ def is_datetime_value(value) -> bool:
 
     # pandas-Fallback
     try:
-        pd.to_datetime(v, errors="raise")
+        pd.to_datetime(v, errors="raise", infer_datetime_format=True)
         return True
     except Exception:
         return False

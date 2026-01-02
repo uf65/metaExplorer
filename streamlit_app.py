@@ -1,7 +1,102 @@
 import streamlit as st
 import ui_auxiliary as uia
+import open_in_explorer as oie
 from attribute_types import infer_all_attribute_types
 import time
+
+def reset_all_filters():
+    """
+    Setzt alle Filter (Zeit, numerisch, kategorial, Medientyp)
+    auf den Ausgangszustand zurück.
+    """
+
+    keys_to_delete = []
+
+    for key in st.session_state.keys():
+        if (
+            key.endswith("_year")
+            or key.endswith("_month")
+            or key.endswith("_weekday")
+            or key.endswith("_hour")
+            or key.endswith("_range")
+            or key.endswith("_cat")
+        ):
+            keys_to_delete.append(key)
+
+    for key in keys_to_delete:
+        del st.session_state[key]
+
+    # Filter-Datenstruktur leeren
+    st.session_state.filters = {}
+
+    # Medientyp zurücksetzen
+    st.session_state.media_type_filter = "Alle Medien"
+
+def sanitize_filter_selections(attr, attr_type, context_df):
+    """
+    Stellt sicher, dass die aktuell gesetzten Filterwerte
+    im gültigen Wertebereich des context_df liegen.
+    """
+
+    # --- Zeitfilter ---
+    if attr_type == "datetime":
+        comps = uia.get_datetime_components(context_df[attr])
+
+        for comp in ["year", "month", "weekday", "hour"]:
+            key = f"{attr}_{comp}"
+            valid = set(comps[comp])
+            selected = set(st.session_state.get(key, []))
+
+            new_selection = sorted(valid & selected)
+
+            # Fall 1: Nutzer hat bewusst alles gelöscht → leer lassen
+            if not selected:
+                st.session_state[key] = []
+                return
+
+            # Fall 2: Auswahl existiert, aber ist im neuen Kontext ungültig → reset
+            if not new_selection and selected:
+                new_selection = sorted(valid)
+
+            st.session_state[key] = new_selection
+
+    # --- Numerisch ---
+    elif attr_type == "numeric":
+        key = f"{attr}_range"
+
+        if key in st.session_state:
+            series = context_df[attr].dropna()
+            if series.empty:
+                return
+
+            min_val, max_val = float(series.min()), float(series.max())
+            cur_min, cur_max = st.session_state[key]
+
+            new_min = max(min_val, cur_min)
+            new_max = min(max_val, cur_max)
+
+            if new_min > new_max:
+                new_min, new_max = min_val, max_val
+
+            st.session_state[key] = (new_min, new_max)
+
+    # --- Kategorisch ---
+    else:
+        key = f"{attr}_cat"
+        valid = set(context_df[attr].dropna().unique())
+        selected = set(st.session_state.get(key, []))
+
+        new_selection = sorted(valid & selected)
+
+        if not selected:
+            st.session_state[key] = []
+            return
+
+        if not new_selection:
+            new_selection = sorted(valid)
+
+        st.session_state[key] = new_selection
+
 
 # ---------- Streamlit UI ----------
 
@@ -169,7 +264,15 @@ if "df" in st.session_state:
             st.session_state.filters = {}  # reset Filterzustand
 
 if "applied_attributes" in st.session_state:
-    st.subheader("🔧 Filter")
+    col_h, col_reset = st.columns([6, 1])
+
+    with col_h:
+        st.subheader("🔧 Filter")
+
+    with col_reset:
+        if st.button("🔄 Reset", help="Alle Filter zurücksetzen"):
+            reset_all_filters()
+            st.rerun()
 
     media_filter = st.radio(
         "Medientyp",
@@ -185,9 +288,37 @@ if "applied_attributes" in st.session_state:
         attr_type = types[attr]
 
         if attr_type == "datetime":
-            st.markdown(f"#### 🕒 {attr}")
+            context_df = uia.apply_filters_except(
+                df,
+                filters,
+                types,
+                st.session_state.media_type_filter,
+                exclude_attr=attr
+            )
 
-            comps = uia.get_datetime_components(df[attr])
+            sanitize_filter_selections(attr, attr_type, context_df)
+
+            comps = uia.get_datetime_components(context_df[attr])
+
+            for part in ["year", "month", "weekday", "hour"]:
+                key = f"{attr}_{part}"
+                if key in st.session_state:
+                    st.session_state[key] = [
+                        v for v in st.session_state[key]
+                        if v in comps[part]
+                    ]
+
+            col_h, col_btn = st.columns([4, 1])
+
+            with col_h:
+                st.markdown(f"#### 🕒 {attr}")
+
+            with col_btn:
+                if st.button("Alles auswählen", key=f"{attr}_select_all_time"):
+                    st.session_state[f"{attr}_year"] = comps["year"]
+                    st.session_state[f"{attr}_month"] = comps["month"]
+                    st.session_state[f"{attr}_weekday"] = comps["weekday"]
+                    st.session_state[f"{attr}_hour"] = comps["hour"]
 
             col1, col2, col3, col4 = st.columns(4)
 
@@ -195,25 +326,25 @@ if "applied_attributes" in st.session_state:
                 "year": col1.multiselect(
                     "Jahr",
                     comps["year"],
-                    default=comps["year"],
+                    #default=comps["year"],
                     key=f"{attr}_year"
                 ),
                 "month": col2.multiselect(
                     "Monat",
                     comps["month"],
-                    default=comps["month"],
+                    #default=comps["month"],
                     key=f"{attr}_month"
                 ),
                 "weekday": col3.multiselect(
                     "Wochentag (0=Mo)",
                     comps["weekday"],
-                    default=comps["weekday"],
+                    #default=comps["weekday"],
                     key=f"{attr}_weekday"
                 ),
                 "hour": col4.multiselect(
                     "Stunde",
                     comps["hour"],
-                    default=comps["hour"],
+                    #default=comps["hour"],
                     key=f"{attr}_hour"
                 ),
             }
@@ -221,27 +352,65 @@ if "applied_attributes" in st.session_state:
         elif attr_type == "numeric":
             st.markdown(f"#### 🔢 {attr}")
 
-            series = df[attr].dropna()
-            min_val, max_val = float(series.min()), float(series.max())
+            context_df = uia.apply_filters_except(
+                df,
+                filters,
+                types,
+                st.session_state.media_type_filter,
+                exclude_attr=attr
+            )
+
+            sanitize_filter_selections(attr, attr_type, context_df)
+            series = context_df[attr].dropna()
+            key = f"{attr}_range"
+            lo, hi = float(series.min()), float(series.max())
+
+            current = st.session_state.get(key, (lo, hi))
+            current = (
+                max(current[0], lo),
+                min(current[1], hi)
+            )
 
             filters[attr] = st.slider(
                 attr,
-                min_value=min_val,
-                max_value=max_val,
-                value=(min_val, max_val),
-                key=f"{attr}_range"
+                min_value=lo,
+                max_value=hi,
+                value=current,
+                key=key
             )
 
         else:
-            st.markdown(f"#### 📦 {attr}")
+            context_df = uia.apply_filters_except(
+                df,
+                filters,
+                types,
+                st.session_state.media_type_filter,
+                exclude_attr=attr
+            )
 
-            values = sorted(df[attr].dropna().unique())
+            sanitize_filter_selections(attr, attr_type, context_df)
+            values = sorted(context_df[attr].dropna().unique())
+            key = f"{attr}_cat"
+
+            if key in st.session_state:
+                st.session_state[key] = [
+                    v for v in st.session_state[key]
+                    if v in values
+                ]
+
+            col_h, col_btn = st.columns([4, 1])
+
+            with col_h:
+                st.markdown(f"#### 📦 {attr}")
+
+            with col_btn:
+                if st.button("Alles auswählen", key=f"{attr}_select_all_cat"):
+                    st.session_state[f"{attr}_cat"] = list(values)
 
             filters[attr] = st.multiselect(
                 attr,
                 values,
-                default=values,
-                key=f"{attr}_cat"
+                key=key
             )
 
 if "filters" in st.session_state:
@@ -313,3 +482,8 @@ if "filters" in st.session_state:
 
             st.success(f"Exportiert nach: {export_path}")
 
+        if st.button("🗂 Im Explorer öffnen", disabled=len(filtered_df) == 0):
+            oie.open_in_explorer(
+                filtered_df["SourceFile"].tolist(),
+                meta_path.parent
+            )
