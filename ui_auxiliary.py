@@ -160,28 +160,27 @@ def apply_filters_except(df, filters, types, media_filter, exclude_attr=None):
     mask = pd.Series(True, index=df.index)
 
     for attr, f in filters.items():
-        if attr == exclude_attr:
+        if attr == exclude_attr or not f:
             continue
 
         t = types[attr]
         if t == "datetime":
-            # Wichtig: Nur filtern, wenn in mindestens einer Komponente etwas ausgewählt ist
-            if any(f.get(p) for p in ["year", "month", "weekday", "hour"]):
-                dt = parse_exif_datetime_series(df[attr])
-                if pd.api.types.is_datetime64_any_dtype(dt):
-                    if f.get("year"): mask &= dt.dt.year.isin(f["year"])
-                    if f.get("month"): mask &= dt.dt.month.isin(f["month"])
-                    if f.get("weekday"): mask &= dt.dt.weekday.isin(f["weekday"])
-                    if f.get("hour"): mask &= dt.dt.hour.isin(f["hour"])
+            # WICHTIG: Nur filtern, wenn in der jeweiligen Komponente etwas gewählt wurde
+            dt = parse_exif_datetime_series(df[attr])
+            if pd.api.types.is_datetime64_any_dtype(dt):
+                if f.get("year"): mask &= dt.dt.year.isin(f["year"])
+                if f.get("month"): mask &= dt.dt.month.isin(f["month"])
+                if f.get("weekday"): mask &= dt.dt.weekday.isin(f["weekday"])
+                if f.get("hour"): mask &= dt.dt.hour.isin(f["hour"])
 
         elif t == "numeric":
-            # Numerische Filter sind durch Slider immer gesetzt, aber wir prüfen zur Sicherheit
             mask &= df[attr].between(f[0], f[1])
 
         else:  # categorical
-            # Nur filtern, wenn die Liste NICHT leer ist
-            if f:
+            # ÄNDERUNG: Nur filtern, wenn die Liste f Werte enthält!
+            if isinstance(f, list) and len(f) > 0:
                 mask &= df[attr].isin(f)
+            # Falls f eine leere Liste ist, wird die Maske nicht verändert (Passiv-Modus)
 
     # Globaler Medienfilter bleibt immer aktiv
     if media_filter != "Alle Medien":

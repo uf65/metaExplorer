@@ -300,6 +300,7 @@ if "applied_attributes" in st.session_state:
         # --- DATETIME FILTER ---
         if attr_type == "datetime":
             comps = uia.get_datetime_components(context_df[attr])
+            all_comps = uia.get_datetime_components(df[attr])
 
             col_h, col_btn = st.columns([4, 1])
             col_h.markdown(f"#### 🕒 {attr}")
@@ -318,7 +319,10 @@ if "applied_attributes" in st.session_state:
             for part_key, label, col in time_parts:
                 key = f"{attr}_{part_key}"
                 # Wir übergeben die aktuell im Kontext verfügbaren Optionen
-                selection = col.multiselect(label, options=comps[part_key], key=key)
+                time_options = comps[part_key]
+                if not time_options:
+                    time_options = all_comps[part_key]
+                selection = col.multiselect(label, options=time_options, key=key)
                 attr_filter_data[part_key] = selection
 
             current_filters[attr] = attr_filter_data
@@ -339,6 +343,8 @@ if "applied_attributes" in st.session_state:
         # --- CATEGORICAL FILTER ---
         else:
             values = sorted(context_df[attr].dropna().unique())
+            if not values:
+                values = sorted(df[attr].dropna().unique())
             col_h, col_btn = st.columns([4, 1])
             col_h.markdown(f"#### 📦 {attr}")
 
