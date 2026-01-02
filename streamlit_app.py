@@ -265,14 +265,11 @@ if "df" in st.session_state:
 
 if "applied_attributes" in st.session_state:
     col_h, col_reset = st.columns([6, 1])
-
     with col_h:
         st.subheader("🔧 Filter")
-
     with col_reset:
         if st.button("🔄 Reset", help="Alle Filter zurücksetzen"):
-            reset_all_filters()
-            st.rerun()
+            uia.reset_all_filters()  # Nutzt die neue Reset-Logik
 
     media_filter = st.radio(
         "Medientyp",
@@ -282,136 +279,85 @@ if "applied_attributes" in st.session_state:
     )
 
     types = st.session_state.attribute_types
-    filters = st.session_state.filters
+    # Wir arbeiten direkt mit session_state für die Filter-Definition
+    if "filters" not in st.session_state:
+        st.session_state.filters = {}
+
+    current_filters = st.session_state.filters
 
     for attr in st.session_state.applied_attributes:
         attr_type = types[attr]
 
+        # Kontext-Daten berechnen (alle Filter außer dem aktuellen)
+        context_df = uia.apply_filters_except(
+            df,
+            current_filters,
+            types,
+            st.session_state.media_type_filter,
+            exclude_attr=attr
+        )
+
+        # --- DATETIME FILTER ---
         if attr_type == "datetime":
-            context_df = uia.apply_filters_except(
-                df,
-                filters,
-                types,
-                st.session_state.media_type_filter,
-                exclude_attr=attr
-            )
-
-            sanitize_filter_selections(attr, attr_type, context_df)
-
             comps = uia.get_datetime_components(context_df[attr])
 
-            for part in ["year", "month", "weekday", "hour"]:
-                key = f"{attr}_{part}"
-                if key in st.session_state:
-                    st.session_state[key] = [
-                        v for v in st.session_state[key]
-                        if v in comps[part]
-                    ]
-
             col_h, col_btn = st.columns([4, 1])
+            col_h.markdown(f"#### 🕒 {attr}")
 
-            with col_h:
-                st.markdown(f"#### 🕒 {attr}")
-
-            with col_btn:
-                if st.button("Alles auswählen", key=f"{attr}_select_all_time"):
-                    st.session_state[f"{attr}_year"] = comps["year"]
-                    st.session_state[f"{attr}_month"] = comps["month"]
-                    st.session_state[f"{attr}_weekday"] = comps["weekday"]
-                    st.session_state[f"{attr}_hour"] = comps["hour"]
+            # "Alles auswählen" für Zeitfilter
+            if col_btn.button("Alles auswählen", key=f"btn_all_{attr}"):
+                for p in ["year", "month", "weekday", "hour"]:
+                    st.session_state[f"{attr}_{p}"] = comps[p]
+                st.rerun()
 
             col1, col2, col3, col4 = st.columns(4)
+            time_parts = [("year", "Jahr", col1), ("month", "Monat", col2),
+                          ("weekday", "Wochentag", col3), ("hour", "Stunde", col4)]
 
-            filters[attr] = {
-                "year": col1.multiselect(
-                    "Jahr",
-                    comps["year"],
-                    #default=comps["year"],
-                    key=f"{attr}_year"
-                ),
-                "month": col2.multiselect(
-                    "Monat",
-                    comps["month"],
-                    #default=comps["month"],
-                    key=f"{attr}_month"
-                ),
-                "weekday": col3.multiselect(
-                    "Wochentag (0=Mo)",
-                    comps["weekday"],
-                    #default=comps["weekday"],
-                    key=f"{attr}_weekday"
-                ),
-                "hour": col4.multiselect(
-                    "Stunde",
-                    comps["hour"],
-                    #default=comps["hour"],
-                    key=f"{attr}_hour"
-                ),
-            }
+            attr_filter_data = current_filters.get(attr, {})
+            for part_key, label, col in time_parts:
+                key = f"{attr}_{part_key}"
+                # Wir übergeben die aktuell im Kontext verfügbaren Optionen
+                selection = col.multiselect(label, options=comps[part_key], key=key)
+                attr_filter_data[part_key] = selection
 
+            current_filters[attr] = attr_filter_data
+
+        # --- NUMERIC FILTER ---
         elif attr_type == "numeric":
             st.markdown(f"#### 🔢 {attr}")
-
-            context_df = uia.apply_filters_except(
-                df,
-                filters,
-                types,
-                st.session_state.media_type_filter,
-                exclude_attr=attr
-            )
-
-            sanitize_filter_selections(attr, attr_type, context_df)
             series = context_df[attr].dropna()
-            key = f"{attr}_range"
-            lo, hi = float(series.min()), float(series.max())
+            if not series.empty:
+                lo, hi = float(series.min()), float(series.max())
+                key = f"{attr}_range"
+                val = st.session_state.get(key, (lo, hi))
+                # Validierung gegen neue Grenzen
+                val = (max(val[0], lo), min(val[1], hi))
+                if val[0] > val[1]: val = (lo, hi)
+                current_filters[attr] = st.slider(attr, lo, hi, val, key=key)
 
-            current = st.session_state.get(key, (lo, hi))
-            current = (
-                max(current[0], lo),
-                min(current[1], hi)
-            )
-
-            filters[attr] = st.slider(
-                attr,
-                min_value=lo,
-                max_value=hi,
-                value=current,
-                key=key
-            )
-
+        # --- CATEGORICAL FILTER ---
         else:
-            context_df = uia.apply_filters_except(
-                df,
-                filters,
-                types,
-                st.session_state.media_type_filter,
-                exclude_attr=attr
-            )
-
-            sanitize_filter_selections(attr, attr_type, context_df)
             values = sorted(context_df[attr].dropna().unique())
-            key = f"{attr}_cat"
-
-            if key in st.session_state:
-                st.session_state[key] = [
-                    v for v in st.session_state[key]
-                    if v in values
-                ]
-
             col_h, col_btn = st.columns([4, 1])
+            col_h.markdown(f"#### 📦 {attr}")
 
-            with col_h:
-                st.markdown(f"#### 📦 {attr}")
+            # "Alles auswählen" für Kategorien
+            if col_btn.button("Alles auswählen", key=f"btn_all_{attr}"):
+                st.session_state[f"{attr}_cat"] = values
+                st.rerun()
 
-            with col_btn:
-                if st.button("Alles auswählen", key=f"{attr}_select_all_cat"):
-                    st.session_state[f"{attr}_cat"] = list(values)
+            selection = st.multiselect("Werte auswählen", options=values, key=f"{attr}_cat")
+            current_filters[attr] = selection
 
-            filters[attr] = st.multiselect(
-                attr,
-                values,
-                key=key
-            )
+    # Am Ende: Alle Filter anwenden für das Endergebnis
+    filtered_df = uia.apply_filters(
+        df,
+        current_filters,
+        st.session_state.attribute_types,
+        st.session_state.media_type_filter
+    )
+    st.session_state.filtered_df = filtered_df
 
 if "filters" in st.session_state:
     filtered_df = uia.apply_filters(

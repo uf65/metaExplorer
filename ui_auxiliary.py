@@ -155,6 +155,7 @@ def apply_filters(df, filters, types, media_filter):
 
     return df[mask]
 
+
 def apply_filters_except(df, filters, types, media_filter, exclude_attr=None):
     mask = pd.Series(True, index=df.index)
 
@@ -163,26 +164,29 @@ def apply_filters_except(df, filters, types, media_filter, exclude_attr=None):
             continue
 
         t = types[attr]
-
         if t == "datetime":
-            dt = parse_exif_datetime_series(df[attr])
-            mask &= dt.dt.year.isin(f["year"])
-            mask &= dt.dt.month.isin(f["month"])
-            mask &= dt.dt.weekday.isin(f["weekday"])
-            mask &= dt.dt.hour.isin(f["hour"])
+            # Wichtig: Nur filtern, wenn in mindestens einer Komponente etwas ausgewählt ist
+            if any(f.get(p) for p in ["year", "month", "weekday", "hour"]):
+                dt = parse_exif_datetime_series(df[attr])
+                if pd.api.types.is_datetime64_any_dtype(dt):
+                    if f.get("year"): mask &= dt.dt.year.isin(f["year"])
+                    if f.get("month"): mask &= dt.dt.month.isin(f["month"])
+                    if f.get("weekday"): mask &= dt.dt.weekday.isin(f["weekday"])
+                    if f.get("hour"): mask &= dt.dt.hour.isin(f["hour"])
 
         elif t == "numeric":
-            lo, hi = f
-            mask &= df[attr].between(lo, hi)
+            # Numerische Filter sind durch Slider immer gesetzt, aber wir prüfen zur Sicherheit
+            mask &= df[attr].between(f[0], f[1])
 
-        else:
-            mask &= df[attr].isin(f)
+        else:  # categorical
+            # Nur filtern, wenn die Liste NICHT leer ist
+            if f:
+                mask &= df[attr].isin(f)
 
-    # globaler Medienfilter
+    # Globaler Medienfilter bleibt immer aktiv
     if media_filter != "Alle Medien":
         is_image = df["SourceFile"].str.lower().str.endswith(tuple(IMAGE_EXTS))
         is_video = df["SourceFile"].str.lower().str.endswith(tuple(VIDEO_EXTS))
-
         if media_filter == "Nur Bilder":
             mask &= is_image
         elif media_filter == "Nur Videos":
@@ -216,3 +220,18 @@ def get_media_type(path: str) -> str:
         return "video"
     return "other"
 
+
+import streamlit as st
+
+def reset_all_filters():
+    # Alle Widget-Keys im Session State löschen
+    for key in list(st.session_state.keys()):
+        if any(s in key for s in ["_year", "_month", "_weekday", "_hour", "_range", "_cat"]):
+            del st.session_state[key]
+
+    # Filter-Dictionary leeren
+    st.session_state.filters = {}
+    st.session_state.media_type_filter = "Alle Medien"
+
+    # Seite neu laden, damit Widgets ihre Defaults annehmen
+    st.rerun()
