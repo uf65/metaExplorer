@@ -3,6 +3,9 @@ import ijson
 import re
 from pathlib import Path
 
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
+VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+
 # ---------- Hilfsfunktionen ----------
 
 def normalize_sourcefile(meta_file: Path, sourcefile: str) -> str:
@@ -103,7 +106,7 @@ def get_datetime_components(series):
         "hour": sorted(valid_dt.dt.hour.unique().astype(int)),
     }
 
-def apply_filters(df, filters, types):
+def apply_filters(df, filters, types, media_filter):
     mask = pd.Series(True, index=df.index)
 
     for attr, f in filters.items():
@@ -136,5 +139,44 @@ def apply_filters(df, filters, types):
         else:  # categorical
             mask &= df[attr].isin(f)
 
+    # --- Medienfilter (global) ---
+    if media_filter != "Alle Medien":
+        is_image = df["SourceFile"].str.lower().str.endswith(
+            tuple(IMAGE_EXTS)
+        )
+        is_video = df["SourceFile"].str.lower().str.endswith(
+            tuple(VIDEO_EXTS)
+        )
+
+        if media_filter == "Nur Bilder":
+            mask &= is_image
+        elif media_filter == "Nur Videos":
+            mask &= is_video
+
     return df[mask]
 
+from moviepy import VideoFileClip
+
+def get_video_duration(path: str) -> float:
+    try:
+        with VideoFileClip(path) as clip:
+            return clip.duration or 0
+    except Exception:
+        return 0
+
+from PIL import Image
+
+def load_and_scale_image(path, max_width=600, max_height=400):
+    img = Image.open(path)
+    img.thumbnail((max_width, max_height), Image.LANCZOS)
+    return img
+
+from pathlib import Path
+
+def get_media_type(path: str) -> str:
+    ext = Path(path).suffix.lower()
+    if ext in IMAGE_EXTS:
+        return "image"
+    if ext in VIDEO_EXTS:
+        return "video"
+    return "other"

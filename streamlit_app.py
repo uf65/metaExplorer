@@ -1,9 +1,7 @@
 import streamlit as st
 import ui_auxiliary as uia
 from attribute_types import infer_all_attribute_types
-
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
-VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+import time
 
 # ---------- Streamlit UI ----------
 
@@ -173,6 +171,13 @@ if "df" in st.session_state:
 if "applied_attributes" in st.session_state:
     st.subheader("🔧 Filter")
 
+    media_filter = st.radio(
+        "Medientyp",
+        options=["Alle Medien", "Nur Bilder", "Nur Videos"],
+        horizontal=True,
+        key="media_type_filter"
+    )
+
     types = st.session_state.attribute_types
     filters = st.session_state.filters
 
@@ -243,25 +248,30 @@ if "filters" in st.session_state:
     filtered_df = uia.apply_filters(
         df,
         st.session_state.filters,
-        st.session_state.attribute_types
+        st.session_state.attribute_types,
+        st.session_state.media_type_filter
     )
 
     st.session_state.filtered_df = filtered_df
 
     st.divider()
-    st.metric(
-        "🎯 Anzahl Mediendateien, die den Filterkriterien entsprechen",
-        f"{len(filtered_df):,}"
-    )
-
-    import time
 
     col_a, col_b = st.columns(2)
+    left, center, right = st.columns([1, 4, 1])
+    with center:
+        viewer_container = st.container(height=500)
+
+    with col_a:
+        st.metric(
+            "🎯 Anzahl Mediendateien, die den Filterkriterien entsprechen",
+            f"{len(filtered_df):,}"
+        )
+        st.caption(f"Medientyp: {st.session_state.media_type_filter}")
 
     # -----------------
     # ▶️ Slideshow
     # -----------------
-    with col_a:
+    with viewer_container:
         if st.button("▶️ Slideshow", disabled=len(filtered_df) == 0):
             media_files = filtered_df["SourceFile"].tolist()
 
@@ -273,14 +283,17 @@ if "filters" in st.session_state:
                 placeholder.empty()
 
                 try:
-                    if ext in IMAGE_EXTS:
-                        placeholder.image(path, use_container_width=True)
-                    elif ext in VIDEO_EXTS:
+                    if ext in uia.IMAGE_EXTS:
+                        img = uia.load_and_scale_image(path)
+                        placeholder.image(img)
+                        time.sleep(2)
+                    elif ext in uia.VIDEO_EXTS:
                         placeholder.video(path)
+                        duration = uia.get_video_duration(path)
+                        time.sleep(duration + 5)
                     else:
                         continue
 
-                    time.sleep(2)
 
                 except Exception as e:
                     st.warning(f"Fehler beim Anzeigen von {path}: {e}")
