@@ -172,9 +172,7 @@ def get_media_type(path: str) -> str:
         return "video"
     return "other"
 
-
 import streamlit as st
-
 
 def reset_all_filters():
     # 1. Alle Widget-Keys im Session State löschen
