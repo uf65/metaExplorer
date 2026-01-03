@@ -277,178 +277,149 @@ if "df" in st.session_state:
             st.rerun()
 
 if "applied_attributes" in st.session_state:
-    col_h, col_reset = st.columns([6, 1])
+    # 1. Kopfbereich mit Reset und dem neuen globalen Apply-Button
+    st.divider()
+    col_h, col_reset, col_apply = st.columns([2, 1, 4])
     with col_h:
         st.subheader("🔧 Filter")
-    with col_reset:
-        if st.button("🔄 Reset", help="Alle Filter zurücksetzen"):
-            uia.reset_all_filters()  # Nutzt die neue Reset-Logik
 
-    media_filter = st.radio(
-        "Medientyp",
-        options=["Alle Medien", "Nur Bilder", "Nur Videos"],
-        horizontal=True,
-        key="media_type_filter"
-    )
+    with col_reset:
+        if st.button("🔄 Reset"):
+            uia.reset_all_filters()
+
+    media_filter = st.radio("Medientyp", ["Alle Medien", "Nur Bilder", "Nur Videos"],
+                            horizontal=True, key="media_type_filter")
 
     types = st.session_state.attribute_types
-    # Wir arbeiten direkt mit session_state für die Filter-Definition
     if "filters" not in st.session_state:
         st.session_state.filters = {}
 
-    current_filters = st.session_state.filters
-
+    # 2. Die Filter-Widgets (Reaktiv für Optionen, aber ohne DF-Filterung)
     for attr in st.session_state.applied_attributes:
         attr_type = types[attr]
 
-        # Kontext-Daten berechnen (alle Filter außer dem aktuellen)
-        context_df = uia.apply_filters_except(
-            df,
-            current_filters,
-            types,
-            st.session_state.media_type_filter,
-            exclude_attr=attr
-        )
+        # Kreuzfilterung der OPTIONEN bleibt (berechnet auf Basis des letzten angewandten DF)
+        # Falls kein gefiltertes DF existiert, nimm das Original
+        base_for_options = st.session_state.get("filtered_df", df)
 
-        # --- DATETIME FILTER ---
         if attr_type == "datetime":
-            comps = uia.get_datetime_components(context_df[attr])
-            all_comps = uia.get_datetime_components(df[attr])
-
-            col_h, col_btn = st.columns([4, 1])
-            col_h.markdown(f"#### 🕒 {attr}")
-
-            # "Alles auswählen" für Zeitfilter
-            if col_btn.button("Alles auswählen", key=f"btn_all_{attr}"):
-                for p in ["year", "month", "weekday", "hour"]:
-                    st.session_state[f"{attr}_{p}"] = comps[p]
-                st.rerun()
+            st.markdown(f"#### 🕒 {attr}")
+            # Optionen basierend auf dem aktuellen Kontext
+            comps = uia.get_datetime_components(base_for_options[attr])
+            # Fallback auf alle Werte, falls der Kontext leer ist
+            full_comps = uia.get_datetime_components(df[attr])
 
             col1, col2, col3, col4 = st.columns(4)
             time_parts = [("year", "Jahr", col1), ("month", "Monat", col2),
                           ("weekday", "Wochentag", col3), ("hour", "Stunde", col4)]
 
-            attr_filter_data = current_filters.get(attr, {})
-            for part_key, label, col in time_parts:
-                key = f"{attr}_{part_key}"
-                # Wir übergeben die aktuell im Kontext verfügbaren Optionen
-                time_options = comps[part_key]
-                if not time_options:
-                    time_options = all_comps[part_key]
-                selection = col.multiselect(label, options=time_options, key=key)
-                attr_filter_data[part_key] = selection
+            for p_key, label, col in time_parts:
+                key = f"{attr}_{p_key}"
+                opts = comps[p_key] if comps[p_key] else full_comps[p_key]
 
-            current_filters[attr] = attr_filter_data
+                # WICHTIG: Kein 'default' Parameter verwenden, wenn 'key' gesetzt ist
+                # um "Duplicate Widget ID / Value" Fehler zu vermeiden.
+                # Wir bereinigen lediglich den State, falls Werte nicht mehr in opts sind.
+                if key in st.session_state:
+                    st.session_state[key] = [v for v in st.session_state[key] if v in opts]
 
-        # --- NUMERIC FILTER ---
+                col.multiselect(
+                    label,
+                    options=opts,
+                    key=key
+                )
+
+            # Sync session_state to filters dict
+            st.session_state.filters[attr] = {
+                p: st.session_state.get(f"{attr}_{p}", []) for p in ["year", "month", "weekday", "hour"]
+            }
+
         elif attr_type == "numeric":
             st.markdown(f"#### 🔢 {attr}")
-            series = context_df[attr].dropna()
+            series = df[attr].dropna()
             if not series.empty:
                 lo, hi = float(series.min()), float(series.max())
-                key = f"{attr}_range"
-                val = st.session_state.get(key, (lo, hi))
-                # Validierung gegen neue Grenzen
-                val = (max(val[0], lo), min(val[1], hi))
-                if val[0] > val[1]: val = (lo, hi)
-                current_filters[attr] = st.slider(attr, lo, hi, val, key=key)
+                st.session_state.filters[attr] = st.slider(attr, lo, hi, key=f"{attr}_range")
 
-        # --- CATEGORICAL FILTER ---
-        else:
-            values = sorted(context_df[attr].dropna().unique())
-            if not values:
-                values = sorted(df[attr].dropna().unique())
-            col_h, col_btn = st.columns([4, 1])
-            col_h.markdown(f"#### 📦 {attr}")
+        else:  # categorical
+            st.markdown(f"#### 📦 {attr}")
+            vals = sorted(base_for_options[attr].dropna().unique())
+            if not vals: vals = sorted(df[attr].dropna().unique())
 
-            # "Alles auswählen" für Kategorien
-            if col_btn.button("Alles auswählen", key=f"btn_all_{attr}"):
-                st.session_state[f"{attr}_cat"] = values
-                st.rerun()
+            st.session_state.filters[attr] = st.multiselect("Werte", options=vals, key=f"{attr}_cat")
 
-            selection = st.multiselect("Werte auswählen", options=values, key=f"{attr}_cat")
-            current_filters[attr] = selection
-
-    # Am Ende: Alle Filter anwenden für das Endergebnis
-    filtered_df = uia.apply_filters(
-        df,
-        current_filters,
-        st.session_state.attribute_types,
-        st.session_state.media_type_filter
-    )
-    st.session_state.filtered_df = filtered_df
-
-if "filters" in st.session_state:
-    filtered_df = uia.apply_filters(
-        df,
-        st.session_state.filters,
-        st.session_state.attribute_types,
-        st.session_state.media_type_filter
-    )
-
-    st.session_state.filtered_df = filtered_df
-
+    # 3. Der zentrale Trigger-Button
     st.divider()
-
-    col_a, col_b = st.columns(2)
-    left, center, right = st.columns([1, 4, 1])
-    with center:
-        viewer_container = st.container(height=500)
-
-    with col_a:
-        st.metric(
-            "🎯 Anzahl Mediendateien, die den Filterkriterien entsprechen",
-            f"{len(filtered_df):,}"
+    if st.button("🚀 Filter auf Medienbestand anwenden", type="primary", use_container_width=True):
+        st.session_state.filtered_df = uia.apply_filters(
+            df, st.session_state.filters, types, st.session_state.media_type_filter
         )
-        st.caption(f"Medientyp: {st.session_state.media_type_filter}")
+        st.rerun()
+
+    # 4. Anzeige des Ergebnisses (nur wenn bereits gefiltert wurde)
+    if "filtered_df" in st.session_state:
+        f_df = st.session_state.filtered_df
+
+        st.divider()
+        col_a, col_b = st.columns(2)
+        left, center, right = st.columns([1, 4, 1])
+        with center:
+            viewer_container = st.container(height=500)
+
+        with col_a:
+            st.metric(
+                "🎯 Anzahl Mediendateien, die den Filterkriterien entsprechen",
+                f"{len(f_df):,}"
+            )
+            st.caption(f"Medientyp: {st.session_state.media_type_filter}")
+
+        # -----------------
+        # ▶️ Slideshow
+        # -----------------
+        with viewer_container:
+            if st.button("▶️ Slideshow", disabled=len(f_df) == 0):
+                media_files = f_df["SourceFile"].tolist()
+
+                placeholder = st.empty()
+
+                for path in media_files:
+                    ext = Path(path).suffix.lower()
+
+                    placeholder.empty()
+
+                    try:
+                        if ext in uia.IMAGE_EXTS:
+                            img = uia.load_and_scale_image(path)
+                            placeholder.image(img)
+                            time.sleep(2)
+                        elif ext in uia.VIDEO_EXTS:
+                            placeholder.video(path)
+                            duration = uia.get_video_duration(path)
+                            time.sleep(duration + 5)
+                        else:
+                            continue
+
+
+                    except Exception as e:
+                        st.warning(f"Fehler beim Anzeigen von {path}: {e}")
 
     # -----------------
-    # ▶️ Slideshow
+    # 📄 Export
     # -----------------
-    with viewer_container:
-        if st.button("▶️ Slideshow", disabled=len(filtered_df) == 0):
-            media_files = filtered_df["SourceFile"].tolist()
+        with col_b:
+            if st.button("📄 Export", disabled=len(f_df) == 0):
+                export_path = meta_path.parent / "filelist.csv"
 
-            placeholder = st.empty()
+                f_df[["SourceFile"]].to_csv(
+                    export_path,
+                    index=False,
+                    encoding="utf-8"
+                )
 
-            for path in media_files:
-                ext = Path(path).suffix.lower()
+                st.success(f"Exportiert nach: {export_path}")
 
-                placeholder.empty()
-
-                try:
-                    if ext in uia.IMAGE_EXTS:
-                        img = uia.load_and_scale_image(path)
-                        placeholder.image(img)
-                        time.sleep(2)
-                    elif ext in uia.VIDEO_EXTS:
-                        placeholder.video(path)
-                        duration = uia.get_video_duration(path)
-                        time.sleep(duration + 5)
-                    else:
-                        continue
-
-
-                except Exception as e:
-                    st.warning(f"Fehler beim Anzeigen von {path}: {e}")
-
-# -----------------
-# 📄 Export
-# -----------------
-    with col_b:
-        if st.button("📄 Export", disabled=len(filtered_df) == 0):
-            export_path = meta_path.parent / "filelist.csv"
-
-            filtered_df[["SourceFile"]].to_csv(
-                export_path,
-                index=False,
-                encoding="utf-8"
-            )
-
-            st.success(f"Exportiert nach: {export_path}")
-
-        if st.button("🗂 Im Explorer öffnen", disabled=len(filtered_df) == 0):
-            oie.open_in_explorer(
-                filtered_df["SourceFile"].tolist(),
-                meta_path.parent
-            )
+            if st.button("🗂 Im Explorer öffnen", disabled=len(f_df) == 0):
+                oie.open_in_explorer(
+                    f_df["SourceFile"].tolist(),
+                    meta_path.parent
+                )

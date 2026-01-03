@@ -92,88 +92,35 @@ def get_datetime_components(series):
     dt = parse_exif_datetime_series(series)
     valid_dt = dt.dropna()
 
-    # Falls nach der Konvertierung nichts übrig bleibt oder der Typ falsch ist
     if valid_dt.empty or not pd.api.types.is_datetime64_any_dtype(valid_dt):
         return {"year": [], "month": [], "weekday": [], "hour": []}
 
-    # Sicherstellen, dass die Series als Datetime erkannt wird
-    valid_dt = pd.to_datetime(valid_dt)
-
+    # WICHTIG: Explizite Konvertierung in native Python-Ints
     return {
-        "year": sorted(valid_dt.dt.year.unique().astype(int)),
-        "month": sorted(valid_dt.dt.month.unique().astype(int)),
-        "weekday": sorted(valid_dt.dt.weekday.unique().astype(int)),
-        "hour": sorted(valid_dt.dt.hour.unique().astype(int)),
+        "year": [int(x) for x in sorted(valid_dt.dt.year.unique())],
+        "month": [int(x) for x in sorted(valid_dt.dt.month.unique())],
+        "weekday": [int(x) for x in sorted(valid_dt.dt.weekday.unique())],
+        "hour": [int(x) for x in sorted(valid_dt.dt.hour.unique())],
     }
 
 def apply_filters(df, filters, types, media_filter):
     mask = pd.Series(True, index=df.index)
 
     for attr, f in filters.items():
-        t = types[attr]
+        if not f:  # Wenn der Filter leer ist (z.B. nach Clear All), überspringen = Passiv
+            continue
 
+        t = types[attr]
         if t == "datetime":
             dt = parse_exif_datetime_series(df[attr])
-
-            # Falls die Spalte keine Datumsangaben enthält, überspringen oder alles ausblenden
             if not pd.api.types.is_datetime64_any_dtype(dt):
-                mask &= False
                 continue
 
-            # Erstelle eine Maske für gültige (nicht NaT) Werte
-            temp_mask = dt.notna()
-
-            # Nur filtern, wenn Werte vorhanden sind
-            # Wir verwenden hier .dt nur auf den validen Werten
-            temp_mask &= dt.dt.year.isin(f["year"])
-            temp_mask &= dt.dt.month.isin(f["month"])
-            temp_mask &= dt.dt.weekday.isin(f["weekday"])
-            temp_mask &= dt.dt.hour.isin(f["hour"])
-
-            mask &= temp_mask
-
-        elif t == "numeric":
-            lo, hi = f
-            mask &= df[attr].between(lo, hi)
-
-        else:  # categorical
-            mask &= df[attr].isin(f)
-
-    # --- Medienfilter (global) ---
-    if media_filter != "Alle Medien":
-        is_image = df["SourceFile"].str.lower().str.endswith(
-            tuple(IMAGE_EXTS)
-        )
-        is_video = df["SourceFile"].str.lower().str.endswith(
-            tuple(VIDEO_EXTS)
-        )
-
-        if media_filter == "Nur Bilder":
-            mask &= is_image
-        elif media_filter == "Nur Videos":
-            mask &= is_video
-
-    return df[mask]
-
-
-# In ui_auxiliary.py
-
-def apply_filters_except(df, filters, types, media_filter, exclude_attr=None):
-    mask = pd.Series(True, index=df.index)
-
-    for attr, f in filters.items():
-        if attr == exclude_attr or not f:
-            continue  # WICHTIG: Wenn f leer ist, ignoriere diesen Filter (lässt alles durch)
-
-        t = types[attr]
-        if t == "datetime":
-            dt = parse_exif_datetime_series(df[attr])
-            if pd.api.types.is_datetime64_any_dtype(dt):
-                # Nur Komponenten filtern, die nicht leer sind
-                if f.get("year"): mask &= dt.dt.year.isin(f["year"])
-                if f.get("month"): mask &= dt.dt.month.isin(f["month"])
-                if f.get("weekday"): mask &= dt.dt.weekday.isin(f["weekday"])
-                if f.get("hour"): mask &= dt.dt.hour.isin(f["hour"])
+            # Nur Komponenten filtern, in denen tatsächlich Werte gewählt wurden
+            if f.get("year"): mask &= dt.dt.year.isin(f["year"])
+            if f.get("month"): mask &= dt.dt.month.isin(f["month"])
+            if f.get("weekday"): mask &= dt.dt.weekday.isin(f["weekday"])
+            if f.get("hour"): mask &= dt.dt.hour.isin(f["hour"])
 
         elif t == "numeric":
             mask &= df[attr].between(f[0], f[1])
@@ -182,7 +129,7 @@ def apply_filters_except(df, filters, types, media_filter, exclude_attr=None):
             if isinstance(f, list) and len(f) > 0:
                 mask &= df[attr].isin(f)
 
-    # Globaler Medienfilter bleibt immer aktiv
+    # Globaler Medienfilter
     if media_filter != "Alle Medien":
         is_image = df["SourceFile"].str.lower().str.endswith(tuple(IMAGE_EXTS))
         is_video = df["SourceFile"].str.lower().str.endswith(tuple(VIDEO_EXTS))
@@ -192,6 +139,12 @@ def apply_filters_except(df, filters, types, media_filter, exclude_attr=None):
             mask &= is_video
 
     return df[mask]
+
+
+def apply_filters_except(df, filters, types, media_filter, exclude_attr=None):
+    # Nutzt die gleiche Logik wie apply_filters, schließt aber ein Attribut aus
+    temp_filters = {k: v for k, v in filters.items() if k != exclude_attr}
+    return apply_filters(df, temp_filters, types, media_filter)
 
 from moviepy import VideoFileClip
 
