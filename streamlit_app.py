@@ -258,10 +258,23 @@ if "df" in st.session_state:
         st.divider()
 
         if st.button("🚀 Anwenden"):
-            st.session_state.applied_attributes = list(
-                st.session_state.attributes_selected
-            )
+            selected_attrs = list(st.session_state.attributes_selected)
+            st.session_state.applied_attributes = selected_attrs
             st.session_state.filters = {}  # reset Filterzustand
+
+            # NEU: Vor-Initialisierung mit ALLEN Werten
+            for attr in selected_attrs:
+                attr_type = st.session_state.attribute_types[attr]
+                if attr_type == "datetime":
+                    comps = uia.get_datetime_components(df[attr])
+                    st.session_state[f"{attr}_year"] = comps["year"]
+                    st.session_state[f"{attr}_month"] = comps["month"]
+                    st.session_state[f"{attr}_weekday"] = comps["weekday"]
+                    st.session_state[f"{attr}_hour"] = comps["hour"]
+                elif attr_type == "categorical":
+                    st.session_state[f"{attr}_cat"] = sorted(df[attr].dropna().unique().tolist())
+                # numeric Slider initialisieren sich meist von selbst über min/max
+            st.rerun()
 
 if "applied_attributes" in st.session_state:
     col_h, col_reset = st.columns([6, 1])
