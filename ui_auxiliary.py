@@ -175,15 +175,18 @@ def get_media_type(path: str) -> str:
 
 import streamlit as st
 
+
 def reset_all_filters():
-    # Alle Widget-Keys im Session State löschen
+    # 1. Alle Widget-Keys im Session State löschen
     for key in list(st.session_state.keys()):
         if any(s in key for s in ["_year", "_month", "_weekday", "_hour", "_range", "_cat"]):
             del st.session_state[key]
 
-    # Filter-Dictionary leeren
+    # 2. Den gespeicherten Filter-Zustand und das Ergebnis löschen
     st.session_state.filters = {}
     st.session_state.media_type_filter = "Alle Medien"
+    if "filtered_df" in st.session_state:
+        del st.session_state["filtered_df"]
 
-    # Seite neu laden, damit Widgets ihre Defaults annehmen
+    # 3. Seite neu laden, um Widgets auf Defaults zu setzen
     st.rerun()
