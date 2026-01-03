@@ -261,6 +261,9 @@ if "df" in st.session_state:
             selected_attrs = list(st.session_state.attributes_selected)
             st.session_state.applied_attributes = selected_attrs
             st.session_state.filters = {}  # reset Filterzustand
+            # filtered_df löschen, damit die neue Auswahl auf dem ganzen Datensatz startet
+            if "filtered_df" in st.session_state:
+                del st.session_state["filtered_df"]
 
             # NEU: Vor-Initialisierung mit ALLEN Werten
             for attr in selected_attrs:
@@ -291,62 +294,79 @@ if "applied_attributes" in st.session_state:
                             horizontal=True, key="media_type_filter")
 
     types = st.session_state.attribute_types
+
+    # 1. Sicherstellen, dass die Filter-Struktur existiert
     if "filters" not in st.session_state:
         st.session_state.filters = {}
 
-    # 2. Die Filter-Widgets (Reaktiv für Optionen, aber ohne DF-Filterung)
+    # Bestimme die Basis für die Kreuzfilter-Optionen (Snapshot des letzten Klicks)
+    current_base_df = st.session_state.get("filtered_df", df)
+
     for attr in st.session_state.applied_attributes:
         attr_type = types[attr]
 
-        # Kreuzfilterung der OPTIONEN bleibt (berechnet auf Basis des letzten angewandten DF)
-        # Falls kein gefiltertes DF existiert, nimm das Original
-        base_for_options = st.session_state.get("filtered_df", df)
+        # 2. Kontext berechnen
+        # Wir nutzen das Original-df als Basis für die Kreuzfilterung der Optionen,
+        # damit wir nicht in eine "Leere-Menge-Sackgasse" geraten.
+        context_df = uia.apply_filters_except(
+            df,
+            st.session_state.filters,
+            types,
+            st.session_state.media_type_filter,
+            exclude_attr=attr
+        )
 
-        if attr_type == "datetime":
+        # --- CATEGORICAL FILTER ---
+        if attr_type == "categorical":
+            st.markdown(f"#### 📦 {attr}")
+            key = f"{attr}_cat"
+
+            # Werte aus dem Kontext und der aktuellen Auswahl
+            current_sel = st.session_state.get(key, [])
+            available_vals = context_df[attr].dropna().unique().tolist()
+
+            # WICHTIG: Wenn der Kontext leer ist (z.B. beim ersten Start),
+            # nehmen wir alle Werte des Attributs aus dem Original-Datensatz.
+            all_opts = sorted(list(set(current_sel) | set(available_vals)))
+            if not all_opts:
+                all_opts = sorted(df[attr].dropna().unique().tolist())
+
+            # Widget anzeigen und Wert im Filter-Dict speichern
+            selected = st.multiselect("Werte auswählen", options=all_opts, key=key)
+            st.session_state.filters[attr] = selected
+
+        # --- DATETIME FILTER ---
+        elif attr_type == "datetime":
             st.markdown(f"#### 🕒 {attr}")
-            # Optionen basierend auf dem aktuellen Kontext
-            comps = uia.get_datetime_components(base_for_options[attr])
-            # Fallback auf alle Werte, falls der Kontext leer ist
+            comps = uia.get_datetime_components(context_df[attr])
             full_comps = uia.get_datetime_components(df[attr])
 
             col1, col2, col3, col4 = st.columns(4)
             time_parts = [("year", "Jahr", col1), ("month", "Monat", col2),
                           ("weekday", "Wochentag", col3), ("hour", "Stunde", col4)]
 
+            if attr not in st.session_state.filters:
+                st.session_state.filters[attr] = {}
+
             for p_key, label, col in time_parts:
                 key = f"{attr}_{p_key}"
-                opts = comps[p_key] if comps[p_key] else full_comps[p_key]
+                current_sel = st.session_state.get(key, [])
 
-                # WICHTIG: Kein 'default' Parameter verwenden, wenn 'key' gesetzt ist
-                # um "Duplicate Widget ID / Value" Fehler zu vermeiden.
-                # Wir bereinigen lediglich den State, falls Werte nicht mehr in opts sind.
-                if key in st.session_state:
-                    st.session_state[key] = [v for v in st.session_state[key] if v in opts]
+                # Auch hier: Auswahl + Kontext-Optionen
+                opts = sorted(list(set(current_sel) | set(comps[p_key])))
+                if not opts:
+                    opts = full_comps[p_key]
 
-                col.multiselect(
-                    label,
-                    options=opts,
-                    key=key
-                )
+                col.multiselect(label, options=opts, key=key)
+                st.session_state.filters[attr][p_key] = st.session_state.get(key, [])
 
-            # Sync session_state to filters dict
-            st.session_state.filters[attr] = {
-                p: st.session_state.get(f"{attr}_{p}", []) for p in ["year", "month", "weekday", "hour"]
-            }
-
+        # --- NUMERIC FILTER ---
         elif attr_type == "numeric":
             st.markdown(f"#### 🔢 {attr}")
             series = df[attr].dropna()
             if not series.empty:
                 lo, hi = float(series.min()), float(series.max())
                 st.session_state.filters[attr] = st.slider(attr, lo, hi, key=f"{attr}_range")
-
-        else:  # categorical
-            st.markdown(f"#### 📦 {attr}")
-            vals = sorted(base_for_options[attr].dropna().unique())
-            if not vals: vals = sorted(df[attr].dropna().unique())
-
-            st.session_state.filters[attr] = st.multiselect("Werte", options=vals, key=f"{attr}_cat")
 
     # 3. Der zentrale Trigger-Button
     st.divider()
